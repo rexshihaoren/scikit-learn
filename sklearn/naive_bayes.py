@@ -20,6 +20,7 @@ from abc import ABCMeta, abstractmethod
 import numpy as np
 from scipy.sparse import issparse
 import warnings
+from scipy.misc import factorial
 
 from .base import BaseEstimator, ClassifierMixin
 from .preprocessing import binarize
@@ -30,7 +31,7 @@ from .utils.extmath import safe_sparse_dot, logsumexp
 from .utils.multiclass import _check_partial_fit_first_call
 from .externals import six
 
-__all__ = ['BernoulliNB', 'GaussianNB', 'MultinomialNB']
+__all__ = ['BernoulliNB', 'GaussianNB', 'MultinomialNB', 'PoissonNB']
 
 
 class BaseNB(six.with_metaclass(ABCMeta, BaseEstimator, ClassifierMixin)):
@@ -556,3 +557,82 @@ class BernoulliNB(BaseDiscreteNB):
         jll += self.class_log_prior_ + neg_prob.sum(axis=1)
 
         return jll
+
+class PoissonNB(BaseNB):
+    """
+    Poisson Naive Bayes (PoissonNB)
+
+    Attributes
+    ----------
+    `class_prior_` : array, shape = [n_classes]
+        probability of each class.
+
+    `lamb_` : array, shape = [n_classes, n_features]
+        mean of each feature per class
+    `model_` : array, shape = [n_classes, ]
+        model class
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> X = np.array([[-1, -1], [-2, -1], [-3, -2], [1, 1], [2, 1], [3, 2]])
+    >>> Y = np.array([1, 1, 1, 2, 2, 2])
+    >>> from sklearn.naive_bayes import PossionNB
+    >>> clf = PoissonNB()
+    >>> clf.fit(X, Y)
+    PossionNB()
+    >>> print(clf.predict([[-0.8, -1]]))
+    [1]
+    """
+
+    def fit(self, X, y):
+        """Fit Poisson Naive Bayes according to X, y
+
+        Parameters
+        ----------
+        X : structured array-like, shape = [n_samples, n_features]
+            Training vectors, where n_samples is the number of samples
+            and n_features is the number of features. Each coloumn can
+            be accessed by column name.
+
+        y : array-like, shape = [n_samples]
+            Target values.
+
+        Returns
+        -------
+        self : object
+            Returns self.
+        """
+
+        X, y = check_arrays(X, y, sparse_format='dense')
+        y = column_or_1d(y, warn=True)
+
+        n_samples, n_features = X.shape
+
+        self.classes_ = unique_y = np.unique(y)
+        n_classes = unique_y.shape[0]
+
+        self.lamb_ = np.zeros((n_classes, n_features))
+        self.class_prior_ = np.zeros(n_classes)
+        epsilon = 1e-9
+        for i, y_i in enumerate(unique_y):
+            Xi = X[y == y_i, :]
+            L, R = Xi.shape
+            for j in range(0, R):
+                # Estimate lambda
+                lamb = np.mean(Xi[:,j])
+                self.lamb_[i, j] = lamb
+            self.class_prior_[i] = np.float(Xi.shape[0]) / n_samples
+        return self
+
+    def _joint_log_likelihood(self, X):
+        X = array2d(X)
+        joint_log_likelihood = []
+        func = lambda lamb, x: x* np.log(lamb)- lamb - np.log(factorial(x))
+        vecfunc = np.vectorize(func)
+        for i in range(np.size(self.classes_)):
+            jointi = np.log(self.class_prior_[i])
+            n_ij = np.sum(vecfunc(self.lamb_[i,:].T, X), axis = 1)
+            joint_log_likelihood.append(jointi + n_ij)
+        joint_log_likelihood = np.array(joint_log_likelihood).T
+        return joint_log_likelihood
